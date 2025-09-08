@@ -8,6 +8,11 @@
       "description": "Model path: /conf/sandbox/settings/dam/cfm/models/hero-of-the-day",
       "additionalProperties": false,
       "properties": {
+        "Full name": {
+          "type": "string",
+          "maxLength": 255,
+          "title": "Full user name"
+        },
         "userEmail": {
           "type": "string",
           "maxLength": 255,
