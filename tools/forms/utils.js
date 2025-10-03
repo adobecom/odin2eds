@@ -18,6 +18,28 @@ export function toClassName(name) {
     : '';
 }
 
+export const REF_MARKER = '#URL//';
+
+/**
+ * Extracts the ref from a string.
+ * @param {string} value - The string to extract the ref from
+ * @returns {string} The ref or self if no ref is found
+ */
+export function fromRef(value) {
+  if (value.startsWith(REF_MARKER)) {
+    return value.substring(REF_MARKER.length);
+  }
+  return value;
+}
+
+export function toRef(value) {
+  return `${REF_MARKER}${value}`;
+}
+
+export function isRef(value) {
+  return typeof value === 'string' && value.startsWith(REF_MARKER);
+}
+
 /**
  * Extracts the config from a block.
  * @param {Element} block The block element

@@ -4,6 +4,7 @@
  */
 
 import { pathToGroupId } from '../form-generator/path-utils.js';
+import { pointerToInputName, inputNameToPointer, findModelNodeByPointer } from '../form-model/path-utils.js';
 
 /**
  * FormValidation
@@ -29,6 +30,44 @@ export default class FormValidation {
   }
 
   /**
+   * Scroll to and focus the first invalid control across the entire form.
+   * Falls back to the first group-level error if no field-level errors exist.
+   */
+  scrollToFirstErrorAcrossForm() {
+    // Prefer first field-level error in render/insertion order
+    let targetFieldPath = null;
+    for (const fieldPath of this.formGenerator.fieldElements.keys()) {
+      if (this.formGenerator.fieldErrors.has(fieldPath)) { targetFieldPath = fieldPath; break; }
+    }
+
+    if (targetFieldPath) {
+      const groupId = this.formGenerator.fieldToGroup.get(targetFieldPath) || null;
+      if (groupId) {
+        try { this.formGenerator.navigation.navigateToGroup(groupId); } catch { }
+      }
+      const el = this.formGenerator.fieldElements.get(targetFieldPath)
+        || this.formGenerator.container.querySelector(`[name="${targetFieldPath}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        try { el.focus({ preventScroll: true }); } catch { }
+        if (groupId) {
+          try { this.formGenerator.navigation.updateActiveGroup(groupId); } catch { }
+        }
+        try { this.formGenerator._programmaticScrollUntil = Date.now() + 1500; } catch { }
+      }
+      return;
+    }
+
+    // Fallback: first group-level error (e.g., empty required array)
+    const firstGroup = this.formGenerator.groupErrors.keys().next();
+    if (!firstGroup.done) {
+      const gid = firstGroup.value;
+      try { this.formGenerator.navigation.navigateToGroup(gid); } catch { }
+      try { this.formGenerator._programmaticScrollUntil = Date.now() + 1500; } catch { }
+    }
+  }
+
+  /**
    * Scroll to and focus the first invalid control within a given group.
    * Uses generator maps to resolve the field element efficiently.
    * @param {string} groupId - Target group DOM id
@@ -38,7 +77,7 @@ export default class FormValidation {
 
     const rootGroupId = pathToGroupId('root');
     // During programmatic navigation, suppress scrollspy updates so active stays on clicked item
-    try { this.formGenerator._programmaticScrollUntil = Date.now() + 1500; } catch {}
+    try { this.formGenerator._programmaticScrollUntil = Date.now() + 1500; } catch { }
     // Special handling for root: jump to the first error among root-level primitive fields
     if (groupId === rootGroupId) {
       let targetFieldPath = null;
@@ -48,16 +87,16 @@ export default class FormValidation {
         if (mapped === rootGroupId) { targetFieldPath = fieldPath; break; }
       }
       if (!targetFieldPath) return;
-      try { this.formGenerator.navigation.navigateToGroup(rootGroupId); } catch {}
+      try { this.formGenerator.navigation.navigateToGroup(rootGroupId); } catch { }
       const el = this.formGenerator.fieldElements.get(targetFieldPath)
         || this.formGenerator.container.querySelector(`[name="${targetFieldPath}"]`);
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        try { el.focus({ preventScroll: true }); } catch {}
+        try { el.focus({ preventScroll: true }); } catch { }
       }
       // Re-assert active selection and extend suppression window briefly
-      try { this.formGenerator.navigation.updateActiveGroup(rootGroupId); } catch {}
-      try { this.formGenerator._programmaticScrollUntil = Date.now() + 1500; } catch {}
+      try { this.formGenerator.navigation.updateActiveGroup(rootGroupId); } catch { }
+      try { this.formGenerator._programmaticScrollUntil = Date.now() + 1500; } catch { }
       return;
     }
 
@@ -70,17 +109,17 @@ export default class FormValidation {
     }
 
     // Navigate to group first (ensures section is visible)
-    try { this.formGenerator.navigation.navigateToGroup(groupId); } catch {}
+    try { this.formGenerator.navigation.navigateToGroup(groupId); } catch { }
 
     if (targetFieldPath) {
       const el = this.formGenerator.fieldElements.get(targetFieldPath)
         || this.formGenerator.container.querySelector(`[name="${targetFieldPath}"]`);
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        try { el.focus({ preventScroll: true }); } catch {}
+        try { el.focus({ preventScroll: true }); } catch { }
         // Keep the clicked group's nav selection sticky during any ensuing scroll
-        try { this.formGenerator.navigation.updateActiveGroup(groupId); } catch {}
-        try { this.formGenerator._programmaticScrollUntil = Date.now() + 1500; } catch {}
+        try { this.formGenerator.navigation.updateActiveGroup(groupId); } catch { }
+        try { this.formGenerator._programmaticScrollUntil = Date.now() + 1500; } catch { }
         return;
       }
     }
@@ -95,24 +134,139 @@ export default class FormValidation {
    * and refreshes the navigation error markers.
    */
   validateAllFields() {
-    // Validate visible inputs first
-    this.formGenerator.fieldSchemas.forEach((schema, fieldPath) => {
-      const inputEl = this.formGenerator.fieldElements.get(fieldPath) || this.formGenerator.container.querySelector(`[name="${fieldPath}"]`);
-      if (inputEl) this.validateField(fieldPath, schema, inputEl, true); // Skip marker refresh during batch
-    });
+    // Rebuild field errors from scratch using the FormUiModel (schema + data driven)
+    const schemaSvc = this.formGenerator.services.schema;
+    const normalize = (node) => this.formGenerator.normalizeSchema(this.formGenerator.derefNode(node) || node || {});
 
-    // Data-driven: mark only required arrays-of-objects that are empty
-    const paths = this.validationService.getEmptyRequiredArrayPaths(
+    const primitives = [];
+    const primitiveArrays = [];
+    const walk = (modelNode) => {
+      if (!modelNode) return;
+      const dottedPath = modelNode.dataPath ? pointerToInputName(modelNode.dataPath) : '';
+      const pointer = modelNode.schemaPointer || '#';
+      const effective = schemaSvc.getEffectiveNodeAtPointer(this.formGenerator.schema, pointer) || {};
+
+      if (modelNode.type === 'object') {
+        const props = effective?.properties || {};
+        const requiredSet = new Set(Array.isArray(effective?.required) ? effective.required : []);
+        for (const [key, propSchema] of Object.entries(props)) {
+          const eff = normalize(propSchema);
+          const primary = Array.isArray(eff.type) ? (eff.type.find((t) => t !== 'null') || eff.type[0]) : eff.type;
+          if (primary === 'object') continue;
+          const fieldPath = dottedPath ? `${dottedPath}.${key}` : key;
+          if (primary === 'array') {
+            const itemsNode = eff && (this.formGenerator.derefNode(eff.items) || eff.items) || {};
+            const itemsEff = normalize(itemsNode) || itemsNode;
+            const itemsPrimary = Array.isArray(itemsEff?.type) ? (itemsEff.type.find((t) => t !== 'null') || itemsEff.type[0]) : itemsEff?.type;
+            // Track arrays of primitives for minItems checks
+            const isPrimitiveItems = !!itemsPrimary && itemsPrimary !== 'object' && !itemsEff?.properties;
+            if (isPrimitiveItems) {
+              primitiveArrays.push({ fieldPath, propSchema: eff, isRequired: requiredSet.has(key) });
+            }
+            continue;
+          }
+          primitives.push({ fieldPath, propSchema: eff, isRequired: requiredSet.has(key) });
+        }
+        if (modelNode.children) {
+          Object.values(modelNode.children).forEach((child) => walk(child));
+        }
+        return;
+      }
+
+      if (modelNode.type === 'array') {
+        if (Array.isArray(modelNode.items)) modelNode.items.forEach((child) => walk(child));
+        return;
+      }
+    };
+
+    // Walk from root
+    try { walk(this.formGenerator.formUiModel); } catch { }
+
+    // Clear and recompute fieldErrors (visible/active only)
+    this.formGenerator.fieldErrors.clear();
+    const isFieldActive = (fieldPath) => {
+      const dotToPointer = (dot) => {
+        if (!dot) return '';
+        return `/${String(dot)
+          .replace(/\[(\d+)\]/g, '/$1')
+          .replace(/\./g, '/')}`;
+      };
+      const findByPointer = (node, pointer) => {
+        if (!node) return null;
+        if (node.dataPath === pointer) return node;
+        if (node.type === 'array' && Array.isArray(node.items)) {
+          for (const child of node.items) {
+            const found = findByPointer(child, pointer);
+            if (found) return found;
+          }
+        }
+        if (node.children) {
+          for (const child of Object.values(node.children)) {
+            const found = findByPointer(child, pointer);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      // Field lives under its parent group; use its group id mapping
+      const groupId = this.formGenerator.fieldToGroup.get(fieldPath) || null;
+      if (!groupId) return false;
+      // Convert groupId back to dotted path (strip prefix 'form-group-')
+      const dotted = groupId.replace(/^form-group-/, '').replace(/-/g, '.');
+      const ptr = inputNameToPointer(dotted);
+      const node = findModelNodeByPointer(this.formGenerator.formUiModel, ptr);
+      return !!(node && node.isActive);
+    };
+    for (const { fieldPath, propSchema, isRequired } of primitives) {
+      if (!isFieldActive(fieldPath)) continue;
+      const inputEl = this.formGenerator.fieldElements.get(fieldPath)
+        || this.formGenerator.container.querySelector(`[name="${fieldPath}"]`);
+      // Prefer the live control value when available to reflect actual UI state
+      const value = inputEl
+        ? this.formGenerator.getInputValue(inputEl)
+        : this.formGenerator.model.getNestedValue(this.formGenerator.data, fieldPath);
+      const error = this.validationService.getValidationError(value, propSchema, { required: !!isRequired });
+      if (inputEl) this.setFieldError(inputEl, error);
+      if (error) this.formGenerator.fieldErrors.set(fieldPath, error);
+    }
+
+    // Validate arrays of primitives against minItems and required semantics
+    for (const { fieldPath, propSchema, isRequired } of primitiveArrays) {
+      const inputEl = this.formGenerator.fieldElements.get(fieldPath)
+        || this.formGenerator.container.querySelector(`[name="${fieldPath}"]`)
+        || this.formGenerator.container.querySelector(`[name^="${fieldPath}["`);
+      const arr = this.formGenerator.model.getNestedValue(this.formGenerator.data, fieldPath);
+      const length = Array.isArray(arr) ? arr.length : 0;
+      const minItems = typeof propSchema.minItems === 'number' ? propSchema.minItems : 0;
+      let error = null;
+      if ((isRequired && length === 0) || (minItems > 0 && length < minItems)) {
+        const needed = Math.max(minItems, 1);
+        error = `Please add at least ${needed} item${needed === 1 ? '' : 's'}.`;
+      }
+      if (inputEl) this.setFieldError(inputEl, error);
+      if (error) this.formGenerator.fieldErrors.set(fieldPath, error);
+    }
+
+    // Data-driven: required arrays-of-objects that are empty
+    const emptyRequiredArraysAll = this.validationService.getEmptyRequiredArrayPaths(
       this.formGenerator.schema,
       this.formGenerator.data,
       {
-        normalize: (node) => this.formGenerator.normalizeSchema(this.formGenerator.derefNode(node) || node || {}),
+        normalize,
         getValue: (obj, path) => this.formGenerator.model.getNestedValue(obj, path),
       }
     );
+    // Filter to only ACTIVE nodes in the current Form UI Model (ignore hidden/activatable groups)
+    const isActiveModelPath = (dotPath) => {
+      const ptr = inputNameToPointer(dotPath);
+      const node = findModelNodeByPointer(this.formGenerator.formUiModel, ptr);
+      return !!(node && node.isActive);
+    };
+    const emptyRequiredArrays = (emptyRequiredArraysAll || []).filter((p) => isActiveModelPath(p));
+
     // Maintain group-level errors in a dedicated map
     this.formGenerator.groupErrors.clear();
-    paths.forEach((p) => {
+    emptyRequiredArrays.forEach((p) => {
       this.formGenerator.groupErrors.set(pathToGroupId(p), 'Required list is empty.');
     });
     // Update sidebar markers after all validation is complete
@@ -148,7 +302,7 @@ export default class FormValidation {
     return !error;
   }
 
-  // getValidationError removed: logic moved to ValidationService
+  // Validation logic centralized in ValidationService
 
   /**
    * Set or clear inline error state for an input element.
@@ -184,7 +338,7 @@ export default class FormValidation {
   refreshNavigationErrorMarkers() {
     if (!this.formGenerator.navigationTree) return;
 
-    // Build error counts per group id (do not color labels; show badge instead)
+    // Build error counts per group id (only for groups that currently exist in nav tree)
     const errorCountByGroupId = new Map();
     // Include both field-level and group-level errors
     this.formGenerator.fieldErrors.forEach((_, key) => {
@@ -246,10 +400,52 @@ export default class FormValidation {
       } else {
         nav.classList.remove('has-error');
         if (badgeEl) badgeEl.remove();
-        // Also remove any legacy triangle icons if present
+        // Remove any previous error indicator icon if present
         const existingIcon = titleEl.querySelector('.error-indicator');
         if (existingIcon) existingIcon.remove();
       }
     });
+
+    // Update header-level aggregated error badge next to the "Navigation" title
+    let totalErrors = 0;
+    try {
+      totalErrors = (this.formGenerator.fieldErrors?.size || 0) + (this.formGenerator.groupErrors?.size || 0);
+      const panelMain = this.formGenerator.navigationTree.closest('.form-side-panel-main');
+      const header = panelMain ? panelMain.querySelector('.form-side-panel-header') : null;
+      const titleContainer = header ? header.querySelector('.form-side-panel-title-container') : null;
+      if (titleContainer) {
+        let headerBadge = titleContainer.querySelector('.error-badge');
+        if (totalErrors > 0) {
+          if (!headerBadge) {
+            headerBadge = document.createElement('span');
+            headerBadge.className = 'error-badge';
+            titleContainer.appendChild(headerBadge);
+          }
+          headerBadge.textContent = String(totalErrors);
+          headerBadge.setAttribute('aria-label', `${totalErrors} validation error${totalErrors === 1 ? '' : 's'}`);
+          headerBadge.setAttribute('role', 'button');
+          headerBadge.setAttribute('tabindex', '0');
+          headerBadge.title = 'Click to jump to first error in the form';
+          const onActivate = (ev) => { ev.preventDefault(); ev.stopPropagation(); this.scrollToFirstErrorAcrossForm(); };
+          headerBadge.onclick = onActivate;
+          headerBadge.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') onActivate(e); };
+        } else if (headerBadge) {
+          headerBadge.remove();
+        }
+      }
+    } catch { }
+
+    // Emit validation state event for hosts (composed to cross shadow DOM)
+    try {
+      const root = this.formGenerator?.container;
+      if (root) {
+        const evt = new CustomEvent('form-validation-state', {
+          detail: { totalErrors },
+          bubbles: true,
+          composed: true,
+        });
+        root.dispatchEvent(evt);
+      }
+    } catch { }
   }
 }

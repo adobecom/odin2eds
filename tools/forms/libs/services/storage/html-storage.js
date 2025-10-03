@@ -8,9 +8,10 @@ import { fromHtml } from "https://esm.sh/hast-util-from-html@2";
 import { toHtml } from "https://esm.sh/hast-util-to-html@9";
 import { selectAll } from "https://esm.sh/hast-util-select@6";
 import { toString } from "https://esm.sh/hast-util-to-string@3";
-import { toClassName } from "../../../utils.js";
+import { toClassName, fromRef, isRef, toRef } from "../../../utils.js";
 
 const DEFAULT_ROOT_NAME = "Form";
+let effectiveSchema;
 
 // -----------------------------
 // HTML tables helpers (scoped to this module)
@@ -29,32 +30,37 @@ export function jsonToHtml(jsonData, rootName = DEFAULT_ROOT_NAME) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
   }
 
+  function toUL(arrayValue) {
+    const rows = [];
+    for (const value of arrayValue) {
+      rows.push(h("li", {}, value));
+    }
+    return h("ul", {}, rows);
+  }
+
   function createTable(name, data, refId = null) {
-    const tableHeader = refId ? `${name} ${refId}` : name;
+    const tableHeader = refId ? `${name} ${toClassName(refId)}` : name;
     const rows = [];
     for (const [key, value] of Object.entries(data)) {
       const childRefId = generateRefId(key, objectQueue.length);
       const combinedRefId = refId ? `${refId}/${childRefId}` : childRefId;
-      if (Array.isArray(value)) {
+      const isObjectArray = Array.isArray(value) && value.every((item) => isObject(item));
+      const isStringArray = Array.isArray(value) && value.every((item) => typeof item === "string");
+      if (isObjectArray) {
         const arrayRefs = [];
         value.forEach((item, index) => {
           const itemRefId = `${combinedRefId}-${index}`;
-          arrayRefs.push(`#${itemRefId}`);
-          if (isObject(item)) {
-            if (!processedObjects.has(itemRefId)) {
-              objectQueue.push({ name: key, data: item, refId: itemRefId });
-              processedObjects.add(itemRefId);
-            }
-          } else {
-            if (!processedObjects.has(itemRefId)) {
-              objectQueue.push({ name: key, data: { value: item }, refId: itemRefId });
-              processedObjects.add(itemRefId);
-            }
+          arrayRefs.push(toRef(itemRefId));
+          if (!processedObjects.has(itemRefId)) {
+            objectQueue.push({ name: key, data: item, refId: itemRefId });
+            processedObjects.add(itemRefId);
           }
         });
-        rows.push(h("div", {}, [h("div", {}, key), h("div", {}, arrayRefs.join(", "))]));
+        rows.push(h("div", {}, [h("div", {}, key), h("div", {}, toUL(arrayRefs))]));
+      } else if (isStringArray) {
+        rows.push(h("div", {}, [h("div", {}, key), h("div", {}, toUL(value))]));
       } else if (isObject(value)) {
-        rows.push(h("div", {}, [h("div", {}, key), h("div", {}, `#${combinedRefId}`)]));
+        rows.push(h("div", {}, [h("div", {}, key), h("div", {}, toRef(combinedRefId))]));
         if (!processedObjects.has(combinedRefId)) {
           objectQueue.push({ name: key, data: value, refId: combinedRefId });
           processedObjects.add(combinedRefId);
@@ -83,14 +89,63 @@ export async function htmlToJson(htmlString, { schema, schemaId, context, servic
   const hastTree = fromHtml(htmlString);
   const tableDivs = selectAll("main > div > div", hastTree);
 
+  async function loadEffectiveSchema(schemaId) {
+    // Determine schema to use (prefer provided, fallback to metadata.schemaId)
+    const schemaName = schemaId || metadata.schemaId;
+    try {
+      if (!effectiveSchema) {
+        return services.schemaLoader.loadSchema(schemaName);
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[html-storage] Failed to load schema for htmlToJson:', e?.message || e);
+    }
+    return null;
+  }
+  function resolveSchema(refId) {
+    let schema = effectiveSchema;
+    if (schema) {
+      const splittedRefId = refId.split("/");
+      for (const id of splittedRefId) {
+        if (id !== "#") {
+          schema = schema[id];
+        }
+      }
+    }
+    return schema;
+  }
+
+  function isUL(element) {
+    const children = element.children;
+    return children.length === 1 && children[0].tagName === 'ul';
+  }
+
+  function parseRawValue(value) {
+    return isRef(value) ? value : parseValue(value);
+  }
+
+  function ulToArrayValue(ulElement) {
+    const values = [];
+    for (const cell of ulElement.children[0].children) {
+      const value = toString(cell);
+      values.push(parseRawValue(value));
+    }
+    return values;
+  }
+
   function parseRowsToBlockData(rows) {
     const data = {};
     for (let i = 0; i < rows.length; i++) {
       const cells = rows[i].children.filter((child) => child.type === "element");
       if (cells.length >= 2) {
         const key = toString(cells[0]).trim();
-        const value = toString(cells[1]).trim();
-        if (value.startsWith("#")) data[key] = value; else data[key] = parseValue(value);
+        const cellValue = cells[1];
+        if (isUL(cellValue)) {
+          data[key] = ulToArrayValue(cellValue);
+        } else {
+          const value = toString(cellValue);
+          data[key] = parseRawValue(value);
+        }
       }
     }
     return data;
@@ -100,7 +155,14 @@ export async function htmlToJson(htmlString, { schema, schemaId, context, servic
     if (value === "") return "";
     if (value === "true") return true;
     if (value === "false") return false;
-    if (!Number.isNaN(value) && !Number.isNaN(parseFloat(value)) && value !== "") return parseFloat(value);
+    
+    // Use regex to check if value is a valid float (not just parseable)
+    // This prevents strings like "+1231243452" or "2034-12-04" from being treated as floats
+    const floatRegex = /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/;
+    if (floatRegex.test(value) && !Number.isNaN(parseFloat(value))) {
+      return parseFloat(value);
+    }
+    
     return value;
   }
 
@@ -133,20 +195,28 @@ export async function htmlToJson(htmlString, { schema, schemaId, context, servic
     const resolved = {};
     for (const [key, value] of Object.entries(obj)) {
       const propertySchema = getPropertySchema(currentSchema, key);
-
-      if (typeof value === "string" && value.startsWith("#")) {
-        const refIds = value.split(",").map((id) => toClassName(id.substring(1).trim()));
+      const valueIsArray = Array.isArray(value);
+      const truelyArray = propertySchema && propertySchema.type === "array" && valueIsArray;
+      const emptyObject= propertySchema && propertySchema["$ref"] && valueIsArray && value.length === 0;
+      if (truelyArray || isRef(value)) {
+        // replace marker before splitting
+        const valueSanitized = truelyArray ? value : [value];
+        const refIds = valueSanitized.map((id) => toClassName(fromRef(id)));
         // If schema says this property is an array, always return an array
         if (propertySchema && propertySchema.type === "array") {
-          const itemSchema = propertySchema.items;
-          const items = refIds
-            .map((refId) => (blocks[refId] ? resolveReferences(blocks[refId], itemSchema) : null))
-            .filter((v) => v !== null);
-          resolved[key] = items;
+          if (propertySchema.items["$ref"]) {
+            const itemSchema = resolveSchema(propertySchema.items["$ref"]);
+            const items = refIds
+              .map((refId) => (blocks[refId] ? resolveReferences(blocks[refId], itemSchema) : null))
+              .filter((v) => v !== null);
+            resolved[key] = items;
+          } else {
+            resolved[key] = refIds;
+          }
         } else {
           // Single or multi refs but no array in schema → collapse single
           const refs = refIds
-            .map((refId) => (blocks[refId] ? resolveReferences(blocks[refId], propertySchema) : null))
+            .map((refId) => (blocks[refId] ? resolveReferences(blocks[refId], resolveSchema(propertySchema["$ref"])) : null))
             .filter((v) => v !== null);
           resolved[key] = refs.length === 1 ? refs[0] : refs;
         }
@@ -167,7 +237,7 @@ export async function htmlToJson(htmlString, { schema, schemaId, context, servic
         } else if (propertySchema && propertySchema.type && propertySchema.type !== "object") {
           resolved[key] = coercePrimitive(parseValue(value), propertySchema.type);
         } else {
-          resolved[key] = value;
+          resolved[key] = emptyObject ? {} : value;
         }
       }
     }
@@ -196,25 +266,15 @@ export async function htmlToJson(htmlString, { schema, schemaId, context, servic
 
   const rootData = blocks["__root__"] || {};
 
-  // Determine schema to use (prefer provided, fallback to metadata.schemaId)
-  let effectiveSchema = schema;
-  const schemaName = schemaId || metadata.schemaId;
-  try {
-    if (!effectiveSchema && schemaName) {
-      effectiveSchema = await services.schemaLoader.loadSchema(schemaName);
-    }
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn('[html-storage] Failed to load schema for htmlToJson:', e?.message || e);
-  }
-
+  effectiveSchema = await loadEffectiveSchema(schemaId);
   return { metadata, data: resolveReferences(rootData, effectiveSchema) };
 }
 
 export default class HtmlTableStorage {
   // Parse html into { metadata, data }
   async parseDocument(htmlString, opts = {}) {
-    return htmlToJson(htmlString, opts);
+    const asJson = await htmlToJson(htmlString, opts);
+    return asJson;
   }
   // Serialize { formMeta, formData } into HTML fragment
   serializeDocument({ formMeta, formData }) {

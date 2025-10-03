@@ -5,9 +5,13 @@ import "./components/title/title.js";
 import { ServiceContainer } from "./libs/services/service-container.js";
 import DA_SDK from 'https://da.live/nx/utils/sdk.js';
 import { DA_LIVE, MHAST_LIVE } from "./utils.js";
+import mountFormUI from './libs/form-ui/form-mount.js';
 
 const style = await getStyle(import.meta.url);
-const formStyles = await getStyle((new URL('./libs/form-ui/form-ui.css', import.meta.url)).href);
+const formContentStyles = await getStyle((new URL('./libs/form-ui/styles/form-ui.content.css', import.meta.url)).href);
+const formGroupsStyles = await getStyle((new URL('./libs/form-ui/styles/form-ui.groups.css', import.meta.url)).href);
+const formInputsStyles = await getStyle((new URL('./libs/form-ui/styles/form-ui.inputs.css', import.meta.url)).href);
+const formNavigationStyles = await getStyle((new URL('./libs/form-ui/styles/form-ui.navigation.css', import.meta.url)).href);
 
 /**
  * FormsEditor
@@ -54,7 +58,7 @@ class FormsEditor extends LitElement {
   /** Lifecycle: attach styles, initialize services, and bootstrap the UI. */
   async connectedCallback() {
     super.connectedCallback();
-    this.shadowRoot.adoptedStyleSheets = [style, formStyles];
+    this.shadowRoot.adoptedStyleSheets = [style, formContentStyles, formGroupsStyles, formInputsStyles, formNavigationStyles];
 
     // init DA SDK context
     const { context } = await DA_SDK;
@@ -62,15 +66,15 @@ class FormsEditor extends LitElement {
     this._services = new ServiceContainer(this._context);
     this._context.services = this._services;
 
-    // Parse URL config using ConfigService
-    const cfg = this._services.config.parseUrl(window.location.href);
-    console.log('cfg', cfg);
-    let pagePath = cfg.pagePath;
-    let schemaFromUrl = cfg.schemaFromUrl;
-    this._storageVersion = cfg.storageVersion;
-    this._showNavConnectors = cfg.showNavConnectors;
-    this._allowLocalSchemas = cfg.allowLocalSchemas;
-    this._localSchemas = cfg.localSchemas;
+    // Resolve merged project config using ConfigService (sheet + URL + derived)
+    const projectConfig = await this._services.config.getProjectConfig(this._context);
+    console.log('cfg', projectConfig);
+    let pagePath = projectConfig.pagePath;
+    this._storageVersion = projectConfig.storageVersion;
+    this._allowLocalSchemas = projectConfig.allowLocalSchemas;
+    this._localSchemas = projectConfig.localSchemas;
+    // Expose config to context for downstream consumers (form-mount)
+    this._context.config = projectConfig;
 
     if (!pagePath) {
       this.error = 'Missing required "page" query parameter. Please provide a page path.';
@@ -80,13 +84,13 @@ class FormsEditor extends LitElement {
     // Load document data before initial render
     await this.loadDocumentData(pagePath);
     this._pagePath = pagePath;
-    schemaFromUrl = this.documentData?.schemaId || schemaFromUrl;
+    const savedSchemaId = this.documentData?.schemaId || '';
 
     // Prepare Form UI (styles), and discover schemas for selection via services
     await this.discoverSchemas();
-    // If schema provided in URL and is valid, auto-load and skip dialog
-    if (schemaFromUrl && this.schemas.some((s) => s.id === schemaFromUrl)) {
-      this.selectedSchema = schemaFromUrl;
+    // If schema saved in document and is valid, auto-load and skip dialog
+    if (savedSchemaId && this.schemas.some((s) => s.id === savedSchemaId)) {
+      this.selectedSchema = savedSchemaId;
       await this.loadSelectedSchema();
       this.showSchemaDialog = false;
     } else {
@@ -96,6 +100,9 @@ class FormsEditor extends LitElement {
 
     this.addEventListener('editor-save', this._handleSave);
     this.addEventListener('editor-preview-publish', this._handlePreviewPublish);
+
+    // Ensure toast component is available
+    try { await import('./components/toast/toast.js'); } catch { }
   }
 
   /** Fetch and parse the page document into editor state. */
@@ -123,7 +130,7 @@ class FormsEditor extends LitElement {
         const allowDefaults = !!this._allowLocalSchemas;
         const explicitList = Array.isArray(this._localSchemas) ? this._localSchemas : [];
         locals = await this._services.localSchema.discoverSchemas({ allowDefaults, explicitList });
-      } catch {}
+      } catch { }
       const merged = Array.isArray(remote) ? [...remote] : [];
       for (const ls of locals) {
         const id = `local:${ls.id || ls.name || ls.url}`;
@@ -147,7 +154,7 @@ class FormsEditor extends LitElement {
     const mountEl = this.renderRoot?.querySelector('#form-root');
     if (!schemaId || !mountEl) return;
     try {
-      
+
       const selected = this.schemas.find((s) => s.id === schemaId) || {};
       let schema;
       let initialData = {};
@@ -159,16 +166,13 @@ class FormsEditor extends LitElement {
         const loaded = await this._services.schemaLoader.loadSchemaWithDefaults(schemaId);
         schema = loaded.schema; initialData = loaded.initialData;
       }
-      
+
       this._selectedSchemaName = selected.name || schema?.title || schemaId;
       // Prefer existing form data from the loaded page if present
       const dataToUse = (this.documentData && this.documentData.formData)
-        ? this.documentData.formData  
+        ? this.documentData.formData
         : initialData;
       if (!this._formApi) {
-        // Lazy-load the form mount API
-        const { default: mountFormUI } = await import('./libs/form-ui/form-mount.js');
-        
         // Debounced sync function
         if (!this._onFormChangeDebounced) {
           this._onFormChangeDebounced = this._debounce((next) => {
@@ -176,18 +180,18 @@ class FormsEditor extends LitElement {
             this.documentData = updated;
           }, 200);
         }
-        
+
         this._formApi = mountFormUI(this._context, {
           mount: mountEl,
           schema,
           data: dataToUse,
-          ui: { renderAllGroups: true, showNavConnectors: this._showNavConnectors },
+          ui: {},
           onChange: (next) => {
             // Sync live changes back to pageData.formData (debounced)
             this._onFormChangeDebounced(next);
           },
           onRemove: () => {
-            try { this._formApi?.destroy(); } catch {}
+            try { this._formApi?.destroy(); } catch { }
             this._formApi = null;
             if (this.documentData) {
               const { formData, ...rest } = this.documentData;
@@ -195,7 +199,16 @@ class FormsEditor extends LitElement {
             }
           },
         });
-        
+
+        // Listen to validation state events to toggle actions and shortcuts
+        const onValidationState = (e) => {
+          const total = e?.detail?.totalErrors || 0;
+          this._setActionsDisabled(total > 0);
+        };
+        try { mountEl.removeEventListener('form-validation-state', this._onValidationState); } catch { }
+        this._onValidationState = onValidationState;
+        mountEl.addEventListener('form-validation-state', onValidationState);
+
       } else {
         this._formApi.updateSchema(schema);
         this._formApi.updateData(dataToUse);
@@ -204,12 +217,7 @@ class FormsEditor extends LitElement {
       this.documentData = { ...(this.documentData || {}), formData: dataToUse, schemaId };
       // Close dialog after successful load
       this.showSchemaDialog = false;
-      // Update URL with selected schema without reloading
-      try {
-        const url = new URL(window.location.href);
-        url.searchParams.set('schema', schemaId);
-        window.history.replaceState({}, '', url);
-      } catch {}
+      // Do not reflect schema in URL anymore
     } catch (e) {
       console.error('[editor] loadSelectedSchema error:', e);
       this.schemaError = `Failed to load schema: ${e?.message || e}`;
@@ -223,10 +231,11 @@ class FormsEditor extends LitElement {
 
   /** Lifecycle: cleanup mounted form and event listeners. */
   disconnectedCallback() {
-    try { this._formApi?.destroy(); } catch {}
+    try { this._formApi?.destroy(); } catch { }
     this._formApi = null;
     this._disableDialogFocusTrap();
     window.removeEventListener('keydown', this._onGlobalKeydown);
+    try { this.renderRoot?.querySelector('#form-root')?.removeEventListener('form-validation-state', this._onValidationState); } catch { }
     super.disconnectedCallback();
   }
 
@@ -238,6 +247,7 @@ class FormsEditor extends LitElement {
       const mod = isMac ? e.metaKey : e.ctrlKey;
       if (mod && e.key.toLowerCase() === 's') {
         e.preventDefault();
+        // Allow save via shortcut even if there are validation errors (testing)
         this._emitSave();
       }
     };
@@ -256,7 +266,7 @@ class FormsEditor extends LitElement {
       } else {
         this._disableDialogFocusTrap();
         if (this._previouslyFocused && typeof this._previouslyFocused.focus === 'function') {
-          try { this._previouslyFocused.focus(); } catch {}
+          try { this._previouslyFocused.focus(); } catch { }
         }
       }
     }
@@ -331,7 +341,7 @@ class FormsEditor extends LitElement {
 
   /** Compute path details used by the UI header component. */
   _getPathDetails() {
-    const { org, repo, ref } =this._context || {};
+    const { org, repo, ref } = this._context || {};
     const parentPath = this._pagePath.split('/').slice(0, -1).join('/');
     const parentName = parentPath.split('/').pop();
     const name = this._pagePath.split('/').pop();
@@ -360,6 +370,21 @@ class FormsEditor extends LitElement {
     }
   }
 
+  /** Enable/disable title action buttons based on validation state. */
+  _setActionsDisabled(disabled) {
+    try {
+      const title = this.renderRoot?.querySelector('da-title');
+      if (!title) return;
+      const root = title.shadowRoot;
+      if (!root) return;
+      // Reflect error state on the component, avoid disabling action buttons directly
+      title.hasErrors = !!disabled;
+      // Color the send button when errors exist
+      const send = root.querySelector('.da-title-action-send');
+      if (send) send.classList.toggle('is-error', !!disabled);
+    } catch { }
+  }
+
   /** Save handler: serialize current form to DA. */
   async _handleSave(e) {
     const resp = await this._services.backend.saveDocument(e.detail, { storageVersion: this._storageVersion });
@@ -371,7 +396,7 @@ class FormsEditor extends LitElement {
   /** Preview/Publish handler: save to DA, then trigger AEM actions. */
   async _handlePreviewPublish(e) {
     const { action, location } = e.detail;
-    const { org, repo } =this._context;
+    const { org, repo } = this._context;
 
     location.classList.add("is-sending");
 
@@ -443,7 +468,7 @@ class FormsEditor extends LitElement {
                 <select id="schema-select" style="flex:1;" @change=${(e) => this.onSchemaChange(e)}>
                   ${this.loadingSchemas ? html`<option value="">-- loading --</option>` : nothing}
                   ${!this.loadingSchemas && this.schemas.length === 0 ? html`<option value="">-- no schemas --</option>` : nothing}
-                  ${this.schemas.map((it) => html`<option value=${it.id} ?selected=${it.id===this.selectedSchema}>${it.name}</option>`)}
+                  ${this.schemas.map((it) => html`<option value=${it.id} ?selected=${it.id === this.selectedSchema}>${it.name}</option>`)}
                 </select>
               </div>
               ${this.schemaError ? html`<div style="color:#b00020; margin: -4px 0 10px 0;">${this.schemaError}</div>` : nothing}

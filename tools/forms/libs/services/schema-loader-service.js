@@ -21,10 +21,9 @@ export class SchemaLoaderService {
   /** Build the base raw.githubusercontent URL for the configured repo/ref. */
   _buildBaseUrl() {
     const { owner, repo, basePath, ref } = this._config;
-    const refSegment = `refs/heads/${ref}`;
     const normalizedBase = (basePath || '').replace(/^\/+/, '').replace(/\/+/, '/');
     const baseWithSlash = normalizedBase.endsWith('/') ? normalizedBase : `${normalizedBase}/`;
-    return `https://raw.githubusercontent.com/${owner}/${repo}/${refSegment}/${baseWithSlash}`;
+    return `https://${ref}--${repo}--${owner}.aem.live/${baseWithSlash}`;
   }
 
   /** Fetch and cache a schema by name (e.g., "user-profile"). */

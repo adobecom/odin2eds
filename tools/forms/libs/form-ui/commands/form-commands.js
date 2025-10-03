@@ -52,10 +52,39 @@ export default function createFormCommands(generator) {
     },
 
     removeArrayItem(arrayPath, index) {
+      // Compute navigation target before mutation
       generator.updateData();
+      const node = generator.model.resolveSchemaByPath(arrayPath);
+      const norm = generator.normalizeSchema(node || {});
+      const isArrayOfObjects = !!(norm && norm.type === 'array' && (
+        (norm.items && (generator.normalizeSchema(generator.derefNode(norm.items) || norm.items || {})?.type === 'object'
+          || generator.normalizeSchema(generator.derefNode(norm.items) || norm.items || {})?.properties))
+      ));
+      const beforeArr = generator.model.getNestedValue(generator.data, arrayPath) || [];
+      const parentPath = arrayPath.includes('.') ? arrayPath.slice(0, arrayPath.lastIndexOf('.')) : 'root';
+      const parentGroupId = generator.pathToGroupId(parentPath || 'root');
+      const nextIndex = Math.max(0, Math.min(index, (Array.isArray(beforeArr) ? beforeArr.length - 2 : 0)));
+
+      // Mutate data and rebuild
       generator.model.removeArrayItem(generator.data, arrayPath, index);
       generator.rebuildBody();
+      // Clear stale errors that may reference removed item indices
+      try { generator.validation.pruneStaleFieldErrors?.(); } catch { }
       generator.validation.validateAllFields();
+
+      // After DOM rebuild, restore a sensible active highlight
+      requestAnimationFrame(() => {
+        try {
+          const afterArr = generator.model.getNestedValue(generator.data, arrayPath) || [];
+          if (isArrayOfObjects && Array.isArray(afterArr) && afterArr.length > 0) {
+            const targetId = generator.arrayItemId(arrayPath, Math.max(0, Math.min(nextIndex, afterArr.length - 1)));
+            generator.navigation.navigateToGroup(targetId);
+          } else {
+            generator.navigation.updateActiveGroup(parentGroupId);
+            generator.navigation.updateContentBreadcrumb(parentGroupId);
+          }
+        } catch { }
+      });
     },
 
     reorderArrayItem(arrayPath, fromIndex, toIndex) {
@@ -63,11 +92,8 @@ export default function createFormCommands(generator) {
     },
 
     resetAll() {
-      const base = generator.renderAllGroups
-        ? generator.generateBaseJSON(generator.schema)
-        : generator.model.generateBaseJSON(generator.schema);
+      const base = generator.generateBaseJSON(generator.schema);
       generator.data = base;
-      generator.activeOptionalGroups = new Set();
       generator.rebuildBody();
       generator.validation.validateAllFields();
     },
