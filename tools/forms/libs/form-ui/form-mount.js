@@ -8,9 +8,7 @@
  *   data,
  *   onChange,
  *   onRemove,
- *   ui: {
- *     // renderAllGroups is supported; other legacy UI toggles were removed
- *   }
+ *   ui: {}
  * });
  * api.updateData(next); api.destroy();
  */
@@ -20,28 +18,31 @@ import FormSidebar from './features/sidebar.js';
 import FormBreadcrumb from './features/breadcrumb.js';
 
 // ---- local helpers: readability only, no behavior change ----
+function hasUserData(data) {
+  if (data == null) return false;
+  if (typeof data !== 'object') return !!data;
+  try { return Object.keys(data).length > 0; } catch { return false; }
+}
+
 function createWrapperAndHost(mount, ui) {
   if (!mount) throw new Error('mountFormUI: mount element is required');
   const controls = ui || {};
-  const showNavConnectors = controls?.showNavConnectors !== false;
 
   const wrapper = document.createElement('div');
   wrapper.className = 'form-container-wrapper';
 
   const host = document.createElement('div');
-  host.className = 'code-block-form';
+  host.className = 'form-ui-host';
   wrapper.appendChild(host);
 
-  return { controls, showNavConnectors, wrapper, host };
+  return { controls, wrapper, host };
 }
 
 function instantiateGenerator(context, schema, controls) {
   let generator;
   let formEl;
   try {
-    generator = new FormGenerator(context, schema, {
-      renderAllGroups: !!controls.renderAllGroups
-    });
+    generator = new FormGenerator(context, schema, {});
     formEl = generator.generateForm();
   } catch (e) {
     console.error('[mountFormUI] failed to create/generate form:', e);
@@ -66,15 +67,22 @@ function setupSidebar(wrapper) {
   const sidebar = new FormSidebar();
   const sideEl = sidebar.createElement();
   wrapper.appendChild(sideEl);
+  try {
+    const toggle = sideEl.querySelector('.nav-activatable-toggle');
+    if (toggle) {
+      toggle.addEventListener('change', () => {
+        wrapper.classList.toggle('hide-activatable-mode', !!toggle.checked);
+      });
+    }
+  } catch { }
   return { sidebar, sideEl };
 }
 
-function setupNavigationTree(generator, sideEl, showNavConnectors) {
+function setupNavigationTree(generator, sideEl) {
   const navigationTree = sideEl.querySelector('.form-navigation-tree');
   try {
-    if (!showNavConnectors) navigationTree.classList.add('hide-tree-connectors');
-    else navigationTree.classList.remove('hide-tree-connectors');
-  } catch {}
+    navigationTree.classList.remove('hide-tree-connectors');
+  } catch { }
   generator.navigationTree = navigationTree;
   return navigationTree;
 }
@@ -89,9 +97,9 @@ function scheduleInitialRender(generator, breadcrumbFeature) {
 function loadInitialData(generator, data) {
   if (!data) return;
   generator.loadData(data);
-  try { window.scrollTo({ top: 0 }); } catch {}
+  try { window.scrollTo({ top: 0 }); } catch { }
   generator.rebuildBody();
-  requestAnimationFrame(() => { try { window.scrollTo({ top: 0 }); } catch {} });
+  requestAnimationFrame(() => { try { window.scrollTo({ top: 0 }); } catch { } });
 }
 
 function wireNavigationClicks(sidebar, generator) {
@@ -112,7 +120,7 @@ function wireNavigationClicks(sidebar, generator) {
  * @param {object} options.schema - JSON Schema describing the form
  * @param {object} [options.data] - Initial data to hydrate the form
  * @param {(nextData: object) => void} [options.onChange] - Callback invoked on any data change
- * @param {{renderAllGroups?: boolean}} [options.ui] - UI flags; currently only `renderAllGroups`
+ * @param {{}} [options.ui]
  * @returns {{
  *   updateData(next: object): void,
  *   updateSchema(nextSchema: object): void,
@@ -122,9 +130,9 @@ function wireNavigationClicks(sidebar, generator) {
  * }}
  */
 export function mountFormUI(context, {
-   mount, schema, data, onChange, ui 
-  } = {}) {
-  const { controls, showNavConnectors, wrapper, host } = createWrapperAndHost(mount, ui);
+  mount, schema, data, onChange, ui
+} = {}) {
+  const { controls, wrapper, host } = createWrapperAndHost(mount, ui);
   let { generator, formEl } = instantiateGenerator(context, schema, controls);
   attachToDom(mount, wrapper, host, formEl);
   // Breadcrumb moved into header
@@ -132,10 +140,34 @@ export function mountFormUI(context, {
 
   // Sidebar
   const { sidebar, sideEl } = setupSidebar(wrapper);
+  // Feature flag: enable/disable navigation toggle from config
+  const isToggleEnabled = !!(context?.config?.ui?.feature?.toggleOptionalGroups?.enabled);
+  const defaultToggleOn = !!(context?.config?.ui?.feature?.toggleOptionalGroups?.defaultOn);
+  try {
+    const controlsEl = sideEl.querySelector('.form-side-panel-controls');
+    if (controlsEl) {
+      if (!isToggleEnabled) {
+        controlsEl.style.display = 'none';
+      } else if (!hasUserData(data)) {
+        // Toggle enabled but hide by default for brand-new forms without user data
+        controlsEl.style.display = 'none';
+      } else {
+        controlsEl.style.display = '';
+        // Apply default-on setting once shown
+        try {
+          const toggle = controlsEl.querySelector('.nav-activatable-toggle');
+          if (toggle) {
+            toggle.checked = !!defaultToggleOn;
+            wrapper.classList.toggle('hide-activatable-mode', !!toggle.checked);
+          }
+        } catch { }
+      }
+    }
+  } catch { }
   wireNavigationClicks(sidebar, generator);
 
   // Connect navigation tree to form generator (use rAF instead of setTimeout)
-  const navigationTree = setupNavigationTree(generator, sideEl, showNavConnectors);
+  const navigationTree = setupNavigationTree(generator, sideEl);
   // Expose content breadcrumb element for navigation/scroll sync
   generator.contentBreadcrumbEl = contentBreadcrumb;
   // First render
@@ -152,7 +184,38 @@ export function mountFormUI(context, {
 
   // expose API continues below
   /** Replace current form data with `next` and re-render inputs. */
-  function updateData(next) { generator.loadData(next || {}); }
+  function updateData(next) {
+    generator.loadData(next || {});
+    try {
+      const controlsEl = sideEl.querySelector('.form-side-panel-controls');
+      if (controlsEl) {
+        if (!isToggleEnabled) controlsEl.style.display = 'none';
+        else {
+          const shouldShow = hasUserData(next);
+          controlsEl.style.display = shouldShow ? '' : 'none';
+          if (shouldShow) {
+            const toggle = controlsEl.querySelector('.nav-activatable-toggle');
+            if (toggle && toggle.getAttribute('data-init') !== '1') {
+              toggle.checked = !!defaultToggleOn;
+              wrapper.classList.toggle('hide-activatable-mode', !!toggle.checked);
+              toggle.setAttribute('data-init', '1');
+            }
+          }
+        }
+      }
+    } catch { }
+  }
+  /** Return whether current form has validation errors. */
+  function hasValidationErrors() {
+    try {
+      return (generator.fieldErrors?.size || 0) + (generator.groupErrors?.size || 0) > 0;
+    } catch { return false; }
+  }
+  /** Get the current total validation error count. */
+  function getValidationErrorCount() {
+    try { return (generator.fieldErrors?.size || 0) + (generator.groupErrors?.size || 0); }
+    catch { return 0; }
+  }
   /**
    * Replace the current schema and rebuild the form while preserving current data.
    * Useful for hot-reloading or switching between schemas.
@@ -161,9 +224,7 @@ export function mountFormUI(context, {
   function updateSchema(nextSchema) {
     const dataSnapshot = generator.data;
     generator.destroy();
-    const newGen = new FormGenerator(nextSchema, {
-      renderAllGroups: !!controls.renderAllGroups,
-    });
+    const newGen = new FormGenerator(context, nextSchema, {});
     const newForm = newGen.generateForm();
     // Replace current form and update references
     if (formEl.parentNode === host) {
@@ -175,14 +236,34 @@ export function mountFormUI(context, {
     }
     formEl = newForm;
     generator = newGen;
-    
+
     const h = newForm.querySelector('.form-ui-header');
     if (h) h.insertAdjacentElement('afterend', sideEl);
     generator.navigationTree = navigationTree;
     requestAnimationFrame(() => generator.navigation.generateNavigationTree());
     generator.onChange((next) => typeof onChange === 'function' && onChange(next));
     generator.loadData(dataSnapshot);
-    
+
+    // Recompute toggle visibility based on preserved data
+    try {
+      const controlsEl = sideEl.querySelector('.form-side-panel-controls');
+      if (controlsEl) {
+        if (!isToggleEnabled) controlsEl.style.display = 'none';
+        else {
+          const shouldShow = hasUserData(dataSnapshot);
+          controlsEl.style.display = shouldShow ? '' : 'none';
+          if (shouldShow) {
+            const toggle = controlsEl.querySelector('.nav-activatable-toggle');
+            if (toggle && toggle.getAttribute('data-init') !== '1') {
+              toggle.checked = !!defaultToggleOn;
+              wrapper.classList.toggle('hide-activatable-mode', !!toggle.checked);
+              toggle.setAttribute('data-init', '1');
+            }
+          }
+        }
+      }
+    } catch { }
+
   }
   /** Programmatically navigate to a group by its DOM id. */
   function navigateTo(groupId) { generator.navigation.navigateToGroup(groupId); }
@@ -202,6 +283,8 @@ export function mountFormUI(context, {
     updateSchema,
     navigateTo,
     getData,
+    hasValidationErrors,
+    getValidationErrorCount,
     destroy,
   };
 }

@@ -1,5 +1,5 @@
 /**
- * FormModel
+ * FormDataModel
  *
  * Pure data helpers used by the generator. Provides utilities for:
  * - Generating base JSON structures (dense or sparse) from schema
@@ -7,7 +7,7 @@
  * - Getting/setting nested values and coercing input values
  * - Array mutations (push/remove/reorder) and pruning helpers
  */
-export default class FormModel {
+export default class FormDataModel {
   /**
    * @param {object} context - Shared services context
    * @param {object} schema - Root JSON Schema
@@ -51,7 +51,7 @@ export default class FormModel {
           break;
         case 'number':
         case 'integer':
-          baseData[key] = effective.default || 0;
+          baseData[key] = (Object.prototype.hasOwnProperty.call(effective, 'default') ? effective.default : null);
           break;
         case 'boolean':
           baseData[key] = effective.default || false;
@@ -111,7 +111,7 @@ export default class FormModel {
           break;
         case 'number':
         case 'integer':
-          baseData[key] = effective.default || 0;
+          baseData[key] = (Object.prototype.hasOwnProperty.call(effective, 'default') ? effective.default : null);
           break;
         case 'boolean':
           baseData[key] = effective.default || false;
@@ -388,5 +388,6 @@ export default class FormModel {
     return data;
   }
 }
+
 
 

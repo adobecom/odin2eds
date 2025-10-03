@@ -25,13 +25,14 @@ export class LocalSchemaService {
         const res = await fetch(url, { cache: 'no-store', method: 'HEAD' });
         if (!res.ok) return;
         found.push({ id: relPath, name: nameHint || relPath, url: url.pathname, _source: 'local' });
-      } catch {}
+      } catch { }
     };
 
     if (allowDefaults) {
       await tryAdd('llrc.schema.json', 'LLRC');
-      await tryAdd('test.schema.json', 'test');
       await tryAdd('inputs.schema.json', 'Inputs');
+      await tryAdd('demo.schema.json', 'Demo');
+      await tryAdd('ffc-photoshop.schema.json', 'ffc-photoshop');
     }
 
     if (Array.isArray(explicitList) && explicitList.length > 0) {
@@ -42,7 +43,7 @@ export class LocalSchemaService {
           if (!r.ok) continue;
           await r.json();
           found.push({ id: p, name: p, url: u.pathname, _source: 'local' });
-        } catch {}
+        } catch { }
       }
     }
 

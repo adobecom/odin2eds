@@ -6,7 +6,7 @@
  * - Orchestrate schema→DOM rendering (header/body/footer)
  * - Build sections and groups via GroupBuilder
  * - Create controls via InputFactory and wire events
- * - Maintain data via FormModel
+ * - Maintain data via FormUiModel
  * - Plug features: Navigation, Validation
  * - Expose maps/refs for features:
  *   groupElements, fieldSchemas, fieldElements, fieldToGroup, navigationTree
@@ -14,7 +14,7 @@
 
 import FormValidation from './features/validation.js';
 import FormNavigation from './features/navigation.js';
-import FormModel from './form-model.js';
+import FormDataModel from './form-data-model.js';
 import InputFactory from './input-factory.js';
 import GroupBuilder from './form-generator/group-builder.js';
 import HighlightOverlay from './features/highlight-overlay.js';
@@ -32,7 +32,7 @@ import createArrayGroupUI from './form-generator/input-array-group.js';
  * the UI, data model, and feature modules (navigation, validation) in sync.
  *
  * Usage:
- * - Construct with `context`, `schema`, and `{ renderAllGroups?: boolean }`
+ * - Construct with `context`, `schema`
  * - Call `generateForm()` to get the root DOM element
  * - Use command helpers for structural changes (activate optional, add/remove/reorder items)
  * - Use `mountFormUI` for a batteries-included mounting and lifecycle wrapper
@@ -41,18 +41,21 @@ export default class FormGenerator {
   /**
    * @param {object} context - Shared services and configuration
    * @param {object} schema - JSON Schema to render
-   * @param {{renderAllGroups?: boolean}} [options]
+   * @param {{}} [options]
    */
   constructor(context, schema, options = {}) {
-    
+
     // Use schema as-is; resolve only parts on-demand to avoid deep recursion on large graphs
     this.context = context;
     this.services = context.services;
     this.schema = schema;
-    this.renderAllGroups = !!options.renderAllGroups;
+    this.renderAllGroups = true;
     // Data model
-    this.model = new FormModel(this.context, this.schema);
-    this.data = this._getBaseJSON(this.schema);
+    this.model = new FormDataModel(this.context, this.schema);
+    // Start with empty data; base defaults are only used when no saved data exists
+    this.data = {};
+    // Derived groups model (read-only)
+    this.formUiModel = this.services.formUiModel.createFormUiModel({ schema: this.schema, data: this.data });
     this.listeners = new Set();
     this.groupCounter = 0;
     this.groupElements = new Map();
@@ -63,7 +66,6 @@ export default class FormGenerator {
     this.fieldSchemas = new Map();
     this.fieldElements = new Map();
     this.fieldToGroup = new Map();
-    this.activeOptionalGroups = new Set();
 
     // Initialize validation and navigation
     this.validation = new FormValidation(this.context, this);
@@ -94,7 +96,21 @@ export default class FormGenerator {
         this.updateData();
         this.model.pushArrayItem(this.data, path, defaultValue);
         this.rebuildBody();
-        requestAnimationFrame(() => this.validation.validateAllFields());
+        requestAnimationFrame(() => {
+          // After rebuild, re-validate and restore active highlight on the owning group
+          try { this.validation.validateAllFields(); } catch { }
+          try {
+            const groupId = this.fieldToGroup.get(path) || null;
+            if (groupId && this.navigation && this.navigation.navigationTree) {
+              // Suppress scrollspy briefly to avoid nav jump
+              try { this._programmaticScrollUntil = Date.now() + 800; } catch { }
+              const exists = this.navigation.navigationTree.querySelector(`[data-group-id="${groupId}"] .form-ui-nav-item-content`);
+              if (exists) {
+                this.navigation.updateActiveGroup(groupId);
+              }
+            }
+          } catch { }
+        });
       },
       onArrayRemove: (path, index) => {
         // Use centralized command for primitive arrays
@@ -111,8 +127,9 @@ export default class FormGenerator {
       generateObjectFields: this.generateObjectFields.bind(this),
       generateInput: this.generateInput.bind(this),
       generateField: this.generateField.bind(this),
-      isOptionalGroupActive: this.isOptionalGroupActive.bind(this),
       onActivateOptionalGroup: this.onActivateOptionalGroup.bind(this),
+
+
       refreshNavigation: () => {
         // Re-map fields to groups and rebuild navigation tree after dynamic insertion
         this.navigation.mapFieldsToGroups();
@@ -126,6 +143,8 @@ export default class FormGenerator {
       getSchemaTitle: this.getSchemaTitle.bind(this),
       normalizeSchema: this.normalizeSchema.bind(this),
       renderAllGroups: this.renderAllGroups,
+      schemaService: this.services.schema,
+      schema: this.schema,
     });
 
     // Visual overlay
@@ -142,7 +161,6 @@ export default class FormGenerator {
    * @returns {boolean}
    */
   isOptionalGroupActive(path) {
-    if (this.activeOptionalGroups.has(path)) return true;
     const cur = this.model.getNestedValue(this.data, path);
     if (Array.isArray(cur)) return cur.length > 0;
     if (cur && typeof cur === 'object') return true;
@@ -156,30 +174,39 @@ export default class FormGenerator {
    * @param {object} schema
    */
   onActivateOptionalGroup(path, schema) {
-    
-    // Mark path as active to include it in navigation
-    this.activeOptionalGroups.add(path);
+
     // Ensure nested path exists in current data
     const schemaNode = this.normalizeSchema(schema);
+    // eslint-disable-next-line no-console
+    console.log('[generator] onActivateOptionalGroup: start', { path, schemaNodeType: schemaNode?.type });
     let baseValue = {};
     if (schemaNode) {
       if (schemaNode.type === 'object') {
-        baseValue = this._getBaseJSON(schemaNode);
+        // Shallow activation: only create the parent object; do not pre-populate optional children
+        baseValue = {};
       } else if (schemaNode.type === 'array') {
+        // For arrays, initialize to [] and let add item flows populate
         baseValue = [];
       }
     }
-    
+
     this.setNestedValue(this.data, path, baseValue);
+    // Update presence snapshot so activation reflects in the UI model
+    // eslint-disable-next-line no-console
+    console.log('[generator] data updated for activation at', path, this.data);
     // Notify listeners for data change
     this.listeners.forEach((listener) => listener(this.data));
     // Rebuild the form body to materialize the newly activated group
-    
-    this.rebuildBody();
+
+    const res = this.rebuildBody();
+    // eslint-disable-next-line no-console
+    console.log('[generator] rebuildBody triggered after activation', res);
   }
 
   /** Rebuild the form body while preserving current state and references. */
   rebuildBody() {
+    // Recompute the read-only FormUiModel before rebuilding UI
+    this.formUiModel = this.services.formUiModel.createFormUiModel({ schema: this.schema, data: this.data });
     return lifecycleRebuildBody(this);
   }
 
@@ -219,8 +246,13 @@ export default class FormGenerator {
    */
   /** Generate the complete form (header/body/footer) and return the root element. */
   generateForm() {
-    
+
     return lifecycleGenerateForm(this);
+  }
+
+  /** Return the latest read-only FormUiModel tree. */
+  getFormUiModel() {
+    return this.formUiModel;
   }
 
   /**
@@ -293,7 +325,7 @@ export default class FormGenerator {
     return this.model.getInputValue(inputEl);
   }
 
-  // Legacy input creators were moved to InputFactory; intentionally removed to reduce duplication.
+  // Input creators live in InputFactory; intentionally centralized to reduce duplication.
 
   /**
    * Create a default object for an array-of-objects item based on its schema.
@@ -413,9 +445,9 @@ export default class FormGenerator {
     const { container } = this;
     if (!container) return;
 
-    // Start with previous data merged over base structure to keep optional branches
-    const baseStructure = this._getBaseJSON(this.schema);
-    this.data = this.model.deepMerge(baseStructure, this.data || {});
+    // Do not merge base defaults here; keep only user-provided values
+    this.data = this.model.deepMerge({}, this.data || {});
+    // No separate presence snapshot
 
     // Collect all form inputs and organize them into nested structure
     const inputs = container.querySelectorAll('input[name], select[name], textarea[name]');
@@ -428,7 +460,13 @@ export default class FormGenerator {
       if (input.type === 'checkbox') {
         value = input.checked;
       } else if (input.type === 'number') {
-        value = input.value === '' ? 0 : parseFloat(input.value) || 0;
+        // Preserve emptiness for numeric inputs instead of coercing to 0
+        if (input.value === '') {
+          value = null;
+        } else {
+          const parsed = parseFloat(input.value);
+          value = Number.isNaN(parsed) ? null : parsed;
+        }
       } else {
         value = input.value;
       }
@@ -441,6 +479,9 @@ export default class FormGenerator {
 
     // Post-process: prune empty entries from primitive arrays at any depth
     this.model.prunePrimitiveArrays(this.schema, '', this.data);
+
+    // Keep derived model in sync for features relying on it
+    this.formUiModel = this.services.formUiModel.createFormUiModel({ schema: this.schema, data: this.data });
 
     // Notify listeners
     this.listeners.forEach((listener) => listener(this.data));
@@ -467,9 +508,11 @@ export default class FormGenerator {
    */
   /** Replace current data with `data` and populate inputs accordingly. */
   loadData(data) {
-    // Merge incoming data with base structure to ensure all fields are present
-    const baseStructure = this._getBaseJSON(this.schema);
-    this.data = this.deepMerge(baseStructure, data || {});
+    // Load exact saved data; no base defaults
+    this.data = this.deepMerge({}, data || {});
+    // Keep derived model in sync for features relying on it
+    this.formUiModel = this.services.formUiModel.createFormUiModel({ schema: this.schema, data: this.data });
+    console.log('loadData: formUiModel', this.formUiModel);
 
     if (!this.container) return;
 
@@ -548,8 +591,8 @@ export default class FormGenerator {
       const data = JSON.parse(jsonString);
       this.loadData(data);
       // Ensure internal data is updated for listeners
-      const base = this._getBaseJSON(this.schema);
-      this.data = this.model.deepMerge(base, data || {});
+      this.data = this.model.deepMerge({}, data || {});
+      this.formUiModel = this.services.formUiModel.createFormUiModel({ schema: this.schema, data: this.data });
       return true;
     } catch (error) {
       // Keep behavior but avoid noisy console in lints; consumers can handle return value
@@ -576,11 +619,9 @@ export default class FormGenerator {
   /** Normalize a schema node (resolve $ref, choose primary type when type is array). */
   normalizeSchema(node) { return this.services.schema.normalizeSchema(this.schema, node); }
 
-  /** Get the base JSON structure according to `renderAllGroups` mode. */
+  /** Get the base JSON structure. */
   _getBaseJSON(schemaNode) {
-    return this.renderAllGroups
-      ? this.model.generateBaseJSON(schemaNode)
-      : this.model.generateSparseBaseJSON(schemaNode);
+    return this.model.generateBaseJSON(schemaNode);
   }
 
   /**
@@ -685,12 +726,6 @@ export default class FormGenerator {
 
     // Data-first: reorder JSON array
     this.model.reorderArray(this.data, arrayPath, fromIndex, toIndex);
-
-    // Clear stale activation paths under this array. Presence in data will drive activation.
-    const subtreePrefix = new RegExp(`^${arrayPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\[`);
-    const filtered = new Set();
-    this.activeOptionalGroups.forEach((p) => { if (!subtreePrefix.test(p)) filtered.add(p); });
-    this.activeOptionalGroups = filtered;
 
     // Rebuild from data/schema so DOM and navigation reflect the new order consistently
     const movedItemId = this.arrayItemId(arrayPath, toIndex);
