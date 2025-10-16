@@ -18,6 +18,8 @@ export default class FormSidebar {
     this.navigationTree = null;
     // Navigation click handler
     this.onNavigationClick = null;
+    // Search click handler
+    this.onSearchClick = null;
   }
 
   /** Create and return the sidebar DOM element using a template. */
@@ -26,6 +28,10 @@ export default class FormSidebar {
     render(sidebarTemplate(), mount);
     this.element = mount.firstElementChild;
     this.navigationTree = this.element.querySelector('.form-navigation-tree');
+    try {
+      const btn = this.element.querySelector('.form-side-panel-search');
+      if (btn) btn.addEventListener('click', () => { if (this.onSearchClick) this.onSearchClick(); });
+    } catch { }
     this.setupEventHandlers();
     return this.element;
   }
@@ -52,6 +58,9 @@ export default class FormSidebar {
 
   /** Register a handler invoked when the navigation tree is clicked. */
   onNavigationClickHandler(handler) { this.onNavigationClick = handler; }
+
+  /** Register a handler invoked when the search button is clicked. */
+  onSearchClickHandler(handler) { this.onSearchClick = handler; }
 
   /** Remove the sidebar from DOM and clear references. */
   destroy() {

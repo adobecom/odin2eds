@@ -94,9 +94,15 @@ export default function createArrayGroupUI(generator, fieldPath, propSchema) {
   container.appendChild(addButton);
 
   const existing = generator.model.getNestedValue(generator.data, fieldPath);
-  if (Array.isArray(existing)) {
-    existing.forEach((_, idx) => addItemAt(idx));
+  const arrayPointer = inputNameToPointer(fieldPath);
+  const arrayModelNode = findModelNodeByPointer(generator.formUiModel, arrayPointer);
+
+  let initialCount = Array.isArray(existing) ? existing.length : 0;
+  if (initialCount === 0 && arrayModelNode && Array.isArray(arrayModelNode.items) && arrayModelNode.items.length > 0) {
+    // Use FormUiModel's seeded items when data is empty
+    initialCount = arrayModelNode.items.length;
   }
+  for (let i = 0; i < initialCount; i += 1) addItemAt(i);
 
   return container;
 }

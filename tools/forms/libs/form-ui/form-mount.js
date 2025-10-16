@@ -16,6 +16,7 @@
 import FormGenerator from './form-generator.js';
 import FormSidebar from './features/sidebar.js';
 import FormBreadcrumb from './features/breadcrumb.js';
+import FormSearch from './features/search.js';
 
 // ---- local helpers: readability only, no behavior change ----
 function hasUserData(data) {
@@ -72,6 +73,9 @@ function setupSidebar(wrapper) {
     if (toggle) {
       toggle.addEventListener('change', () => {
         wrapper.classList.toggle('hide-activatable-mode', !!toggle.checked);
+        try {
+          wrapper.dispatchEvent(new CustomEvent('form-ui:hideOptionalChanged', { detail: { hideOptional: !!toggle.checked } }));
+        } catch { }
       });
     }
   } catch { }
@@ -143,6 +147,11 @@ export function mountFormUI(context, {
   // Feature flag: enable/disable navigation toggle from config
   const isToggleEnabled = !!(context?.config?.ui?.feature?.toggleOptionalGroups?.enabled);
   const defaultToggleOn = !!(context?.config?.ui?.feature?.toggleOptionalGroups?.defaultOn);
+  // Feature flag: enable/disable search + pin
+  const isSearchEnabled = !!(context?.config?.ui?.feature?.search?.enabled);
+  // Runtime state for hide optional groups (data-driven). If the toggle feature is disabled,
+  // hideOptionalMode must be false so search includes all groups.
+  let hideOptionalMode = !!(isToggleEnabled && defaultToggleOn);
   try {
     const controlsEl = sideEl.querySelector('.form-side-panel-controls');
     if (controlsEl) {
@@ -159,12 +168,25 @@ export function mountFormUI(context, {
           if (toggle) {
             toggle.checked = !!defaultToggleOn;
             wrapper.classList.toggle('hide-activatable-mode', !!toggle.checked);
+            hideOptionalMode = !!toggle.checked;
           }
         } catch { }
       }
+      // Toggle search button visibility based on feature flag
+      try {
+        const searchBtn = controlsEl.querySelector('.form-side-panel-search');
+        if (searchBtn) searchBtn.style.display = isSearchEnabled ? '' : 'none';
+      } catch { }
     }
   } catch { }
   wireNavigationClicks(sidebar, generator);
+
+  // Wire search click from sidebar (guarded by feature flag)
+  let searchFeature = null;
+  sidebar.onSearchClickHandler(() => {
+    if (!isSearchEnabled) return;
+    try { searchFeature && searchFeature.open('search'); } catch { }
+  });
 
   // Connect navigation tree to form generator (use rAF instead of setTimeout)
   const navigationTree = setupNavigationTree(generator, sideEl);
@@ -181,6 +203,21 @@ export function mountFormUI(context, {
   generator.onChange((next) => {
     onChange(next);
   });
+
+  // Initialize search feature (isolated) only if enabled
+  if (isSearchEnabled) {
+    searchFeature = new FormSearch(context, generator);
+    searchFeature.init();
+    // Initial sync using state
+    try { searchFeature.setHideOptional?.(hideOptionalMode); } catch { }
+    // Listen to app-level state event instead of querying elements
+    try {
+      wrapper.addEventListener('form-ui:hideOptionalChanged', (e) => {
+        hideOptionalMode = !!(e?.detail?.hideOptional);
+        try { searchFeature.setHideOptional?.(hideOptionalMode); } catch { }
+      });
+    } catch { }
+  }
 
   // expose API continues below
   /** Replace current form data with `next` and re-render inputs. */
@@ -204,6 +241,8 @@ export function mountFormUI(context, {
         }
       }
     } catch { }
+    // Propagate hide-optional state to search if available (state-driven)
+    try { if (searchFeature) searchFeature.setHideOptional?.(hideOptionalMode); } catch { }
   }
   /** Return whether current form has validation errors. */
   function hasValidationErrors() {
@@ -260,6 +299,11 @@ export function mountFormUI(context, {
               toggle.setAttribute('data-init', '1');
             }
           }
+          // Update search button visibility according to feature flag
+          try {
+            const searchBtn = controlsEl.querySelector('.form-side-panel-search');
+            if (searchBtn) searchBtn.style.display = isSearchEnabled ? '' : 'none';
+          } catch { }
         }
       }
     } catch { }
@@ -276,6 +320,7 @@ export function mountFormUI(context, {
     wrapper.remove();
     sidebar.destroy();
     breadcrumbFeature.destroy();
+    try { searchFeature && searchFeature.destroy(); } catch { }
   }
 
   return {

@@ -1,4 +1,5 @@
 import { html } from 'da-lit';
+import ICONS from '../utils/icon-urls.js';
 
 export const sidebarTemplate = () => html`
   <div class="form-side-panel">
@@ -13,6 +14,9 @@ export const sidebarTemplate = () => html`
               <input type="checkbox" class="nav-activatable-toggle" />
               <span class="toggle-slider" aria-hidden="true"></span>
             </label>
+            <button type="button" class="form-side-panel-search" title="Open search (Ctrl/Cmd+K)" aria-label="Open search">
+              <img class="form-ui-icon" src=${ICONS.search} alt="" aria-hidden="true" width="16" height="16" />
+            </button>
           </div>
       </div>
       <div class="form-side-panel-content">

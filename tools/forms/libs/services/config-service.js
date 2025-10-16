@@ -142,6 +142,8 @@ export class ConfigService {
       featureToggleDefaultOnRaw,
       legacyEnableToggleOptionalGroupsRaw,
       legacyDefaultToggleOptionalGroupsRaw,
+      // Search feature flag
+      featureSearchEnabledRaw,
     ] = await Promise.all([
       this.getConfKey(owner, repo, 'aem.repositoryId'),
       this.getConfKey(owner, repo, 'aem.assets.prod.origin'),
@@ -155,6 +157,8 @@ export class ConfigService {
       // Back-compat keys (older shape)
       this.getConfKey(owner, repo, 'ui.enableToggleOptionalGroups'),
       this.getConfKey(owner, repo, 'ui.defaultToggleOptionalGroups'),
+      // Search feature flag key
+      this.getConfKey(owner, repo, 'ui.feature.search.enabled'),
     ]);
 
     const sheet = {
@@ -181,6 +185,7 @@ export class ConfigService {
     };
     const uiToggleOptionalGroups = toBool(featureToggleEnabledRaw) || toBool(legacyEnableToggleOptionalGroupsRaw);
     const uiDefaultToggleOptionalGroups = toBool(featureToggleDefaultOnRaw) || toBool(legacyDefaultToggleOptionalGroupsRaw);
+    const uiSearchEnabled = toBool(featureSearchEnabledRaw);
 
     const assetDelivery = await this.computeAssetDeliverySettings(context, { repositoryId, prodOrigin, dmDeliveryFlag, imageType });
 
@@ -203,7 +208,10 @@ export class ConfigService {
           toggleOptionalGroups: {
             enabled: uiToggleOptionalGroups,
             defaultOn: uiDefaultToggleOptionalGroups,
-          }
+          },
+          search: {
+            enabled: uiSearchEnabled,
+          },
         }
       }
     };

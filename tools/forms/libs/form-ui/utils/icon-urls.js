@@ -6,6 +6,7 @@ export const ICONS = {
   check: new URL('../assets/icons/check.svg', import.meta.url).href,
   list: new URL('../assets/icons/list.svg', import.meta.url).href,
   alert: new URL('../assets/icons/triangle-alert.svg', import.meta.url).href,
+  search: new URL('../assets/icons/search.svg', import.meta.url).href,
 };
 
 export default ICONS;

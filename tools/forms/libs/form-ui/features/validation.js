@@ -140,6 +140,7 @@ export default class FormValidation {
 
     const primitives = [];
     const primitiveArrays = [];
+    const arrayParentGroups = new Set();
     const walk = (modelNode) => {
       if (!modelNode) return;
       const dottedPath = modelNode.dataPath ? pointerToInputName(modelNode.dataPath) : '';
@@ -174,6 +175,9 @@ export default class FormValidation {
       }
 
       if (modelNode.type === 'array') {
+        // Track array parent group ids (data-driven, from model)
+        const dottedPath = modelNode.dataPath ? pointerToInputName(modelNode.dataPath) : '';
+        if (dottedPath) arrayParentGroups.add(pathToGroupId(dottedPath));
         if (Array.isArray(modelNode.items)) modelNode.items.forEach((child) => walk(child));
         return;
       }
@@ -181,41 +185,19 @@ export default class FormValidation {
 
     // Walk from root
     try { walk(this.formGenerator.formUiModel); } catch { }
+    // Persist model-derived array parent group ids for badge/total filtering
+    this._arrayParentGroupIds = arrayParentGroups;
 
     // Clear and recompute fieldErrors (visible/active only)
     this.formGenerator.fieldErrors.clear();
     const isFieldActive = (fieldPath) => {
-      const dotToPointer = (dot) => {
-        if (!dot) return '';
-        return `/${String(dot)
-          .replace(/\[(\d+)\]/g, '/$1')
-          .replace(/\./g, '/')}`;
-      };
-      const findByPointer = (node, pointer) => {
-        if (!node) return null;
-        if (node.dataPath === pointer) return node;
-        if (node.type === 'array' && Array.isArray(node.items)) {
-          for (const child of node.items) {
-            const found = findByPointer(child, pointer);
-            if (found) return found;
-          }
-        }
-        if (node.children) {
-          for (const child of Object.values(node.children)) {
-            const found = findByPointer(child, pointer);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-      // Field lives under its parent group; use its group id mapping
-      const groupId = this.formGenerator.fieldToGroup.get(fieldPath) || null;
-      if (!groupId) return false;
-      // Convert groupId back to dotted path (strip prefix 'form-group-')
-      const dotted = groupId.replace(/^form-group-/, '').replace(/-/g, '.');
-      const ptr = inputNameToPointer(dotted);
-      const node = findModelNodeByPointer(this.formGenerator.formUiModel, ptr);
-      return !!(node && node.isActive);
+      if (!fieldPath) return true;
+      // Convert field path to JSON Pointer, then inspect its parent group node in the FormUiModel
+      const fullPtr = inputNameToPointer(fieldPath); // e.g., /links/0/name
+      const lastSlash = fullPtr.lastIndexOf('/');
+      const parentPtr = lastSlash <= 0 ? '' : fullPtr.slice(0, lastSlash); // e.g., /links/0 (or '' for root)
+      const parentNode = parentPtr ? findModelNodeByPointer(this.formGenerator.formUiModel, parentPtr) : this.formGenerator.formUiModel;
+      return !!(parentNode && parentNode.isActive);
     };
     for (const { fieldPath, propSchema, isRequired } of primitives) {
       if (!isFieldActive(fieldPath)) continue;
@@ -348,13 +330,32 @@ export default class FormValidation {
         groupId = maybeGroupId;
       } else {
         groupId = this.formGenerator.fieldToGroup.get(maybeGroupId) || null;
+        // Fallback: derive owning group id from field path when mapping is missing
+        if (!groupId) {
+          // Array item field e.g., links[0].name → form-array-item-links-0
+          const m = maybeGroupId.match(/^(.*)\[(\d+)\]\.[^.]+$/);
+          if (m) {
+            const arrayPath = m[1];
+            const index = Number(m[2]);
+            groupId = this.formGenerator.arrayItemId(arrayPath, index);
+          } else {
+            // Otherwise, parent object path or root
+            const parent = maybeGroupId.includes('.')
+              ? maybeGroupId.split('.').slice(0, -1).join('.')
+              : 'root';
+            groupId = this.formGenerator.pathToGroupId(parent);
+          }
+        }
       }
       if (groupId) {
         const prev = errorCountByGroupId.get(groupId) || 0;
         errorCountByGroupId.set(groupId, prev + 1);
       }
     });
+    // Add group-level errors, but do NOT show counts on parent array groups
     this.formGenerator.groupErrors.forEach((_, groupId) => {
+      const isArrayParent = !!(this._arrayParentGroupIds && this._arrayParentGroupIds.has(groupId));
+      if (isArrayParent) return; // skip parent array group badge counts
       const prev = errorCountByGroupId.get(groupId) || 0;
       errorCountByGroupId.set(groupId, prev + 1);
     });
@@ -407,9 +408,16 @@ export default class FormValidation {
     });
 
     // Update header-level aggregated error badge next to the "Navigation" title
+    // Exclude parent array group errors from the total, consistent with badges
     let totalErrors = 0;
     try {
-      totalErrors = (this.formGenerator.fieldErrors?.size || 0) + (this.formGenerator.groupErrors?.size || 0);
+      const fieldErrCount = (this.formGenerator.fieldErrors?.size || 0);
+      const groupErrIds = Array.from(this.formGenerator.groupErrors?.keys?.() || []);
+      const filteredGroupErrCount = groupErrIds.reduce((acc, gid) => {
+        const isArrayParent = !!(this._arrayParentGroupIds && this._arrayParentGroupIds.has(gid));
+        return acc + (isArrayParent ? 0 : 1);
+      }, 0);
+      totalErrors = fieldErrCount + filteredGroupErrCount;
       const panelMain = this.formGenerator.navigationTree.closest('.form-side-panel-main');
       const header = panelMain ? panelMain.querySelector('.form-side-panel-header') : null;
       const titleContainer = header ? header.querySelector('.form-side-panel-title-container') : null;
