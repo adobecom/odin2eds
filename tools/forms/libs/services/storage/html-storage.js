@@ -10,7 +10,7 @@ import { selectAll } from "https://esm.sh/hast-util-select@6";
 import { toString } from "https://esm.sh/hast-util-to-string@3";
 import { toClassName, fromRef, isRef, toRef } from "../../../utils.js";
 
-const DEFAULT_ROOT_NAME = "Form";
+const DEFAULT_ROOT_NAME = "form";
 let effectiveSchema;
 
 // -----------------------------
@@ -87,7 +87,7 @@ export async function htmlToJson(htmlString, { schema, schemaId, context, servic
   const references = {};
   let metadata = {};
   const hastTree = fromHtml(htmlString);
-  const tableDivs = selectAll("main > div > div", hastTree);
+  const tableDivs = selectAll('main > div > div', hastTree);
 
   async function loadEffectiveSchema(schemaId) {
     // Determine schema to use (prefer provided, fallback to metadata.schemaId)
@@ -124,7 +124,7 @@ export async function htmlToJson(htmlString, { schema, schemaId, context, servic
     return isRef(value) ? value : parseValue(value);
   }
 
-  function ulToArrayValue(ulElement) {
+  function ulToArrayValue(ulElement) {
     const values = [];
     for (const cell of ulElement.children[0].children) {
       const value = toString(cell);
@@ -155,14 +155,14 @@ export async function htmlToJson(htmlString, { schema, schemaId, context, servic
     if (value === "") return "";
     if (value === "true") return true;
     if (value === "false") return false;
-    
+
     // Use regex to check if value is a valid float (not just parseable)
     // This prevents strings like "+1231243452" or "2034-12-04" from being treated as floats
     const floatRegex = /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/;
     if (floatRegex.test(value) && !Number.isNaN(parseFloat(value))) {
       return parseFloat(value);
     }
-    
+
     return value;
   }
 
@@ -197,7 +197,7 @@ export async function htmlToJson(htmlString, { schema, schemaId, context, servic
       const propertySchema = getPropertySchema(currentSchema, key);
       const valueIsArray = Array.isArray(value);
       const truelyArray = propertySchema && propertySchema.type === "array" && valueIsArray;
-      const emptyObject= propertySchema && propertySchema["$ref"] && valueIsArray && value.length === 0;
+      const emptyObject = propertySchema && propertySchema["$ref"] && valueIsArray && value.length === 0;
       if (truelyArray || isRef(value)) {
         // replace marker before splitting
         const valueSanitized = truelyArray ? value : [value];
@@ -265,9 +265,9 @@ export async function htmlToJson(htmlString, { schema, schemaId, context, servic
   });
 
   const rootData = blocks["__root__"] || {};
-
   effectiveSchema = await loadEffectiveSchema(schemaId);
-  return { metadata, data: resolveReferences(rootData, effectiveSchema) };
+  const resolvedRootSchema = resolveSchema(effectiveSchema.$ref);
+  return { metadata, data: resolveReferences(rootData, resolvedRootSchema) };
 }
 
 export default class HtmlTableStorage {

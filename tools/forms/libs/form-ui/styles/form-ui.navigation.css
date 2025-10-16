@@ -111,6 +111,20 @@
   align-items: center;
 }
 
+/* Search button in side panel controls */
+.form-side-panel-search {
+  border: none;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px;
+  margin-left: 8px;
+  cursor: pointer;
+}
+
+.form-side-panel-search img {
+  display: block;
+}
+
 .nav-activatable-toggle-label {
   display: inline-flex;
   align-items: center;

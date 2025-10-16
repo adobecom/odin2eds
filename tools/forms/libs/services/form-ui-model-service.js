@@ -140,16 +140,30 @@ export class FormUiModelService {
       // eslint-disable-next-line no-console
       // try { console.log('[ui-model] array decision', { dataPath, key, isRequired: !!isRequired, parentActive: !!parentActive, length, isActive: !!node.isActive, activatable: !!node.activatable }); } catch { }
 
-      if (isActive && length > 0) {
-        const items = [];
-        for (let i = 0; i < length; i += 1) {
-          const itemKey = String(i);
-          const itemPointer = `${schemaPointer}/items`;
-          const itemDataPath = `${dataPath}/${i}`;
-          const child = buildObjectNode(rootSchema, itemKey, itemPointer, itemDataPath, deref(rootSchema, arraySchema.items) || arraySchema.items, true, true);
-          items.push(child);
+      if (isActive) {
+        // For required arrays of objects with no data, seed a first empty item
+        const shouldSeedFirstItem = isRequired && length === 0 && isArrayOfObjects(rootSchema, arraySchema);
+        const effectiveLength = length > 0 ? length : (shouldSeedFirstItem ? 1 : 0);
+
+        if (effectiveLength > 0) {
+          const items = [];
+          for (let i = 0; i < effectiveLength; i += 1) {
+            const itemKey = String(i);
+            const itemPointer = `${schemaPointer}/items`;
+            const itemDataPath = `${dataPath}/${i}`;
+            const child = buildObjectNode(
+              rootSchema,
+              itemKey,
+              itemPointer,
+              itemDataPath,
+              deref(rootSchema, arraySchema.items) || arraySchema.items,
+              true,
+              true,
+            );
+            items.push(child);
+          }
+          if (items.length) node.items = items;
         }
-        if (items.length) node.items = items;
       }
       return node;
     };
